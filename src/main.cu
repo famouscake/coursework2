@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #define CHECK(e) { int res = (e); if (res) printf("CUDA ERROR %d\n", res); }
 #define THRESH 10000
@@ -7,6 +6,20 @@
 
 #define WIDTH 640
 #define HEIGHT 480
+
+
+/**
+ * TODO List
+ *
+ * - Start using threads
+ * - Start using texture memory
+ * - Start using shared memory for caching
+ * - Resize image to test for speed
+ * - Think how this can work for images of any size
+ * - Think about bank collisions
+ * - Refactor the code
+ * - Separate into multiple files
+ */
 
 struct Image {
     int width;
@@ -133,31 +146,26 @@ int main(int argc, char **argv)
     filtered.height = source.height;
     filtered.img = (unsigned char *)malloc(pixels);
 
-    for (int i = 0; i < pixels; i++)
-    {
-        filtered.img[i] = 0;
-    }
 
     unsigned char *devGrayScale;
     unsigned char *devFiltered;
-
 
     // Initialize Cuda Memory
     CHECK(cudaMalloc(&devGrayScale, WIDTH * HEIGHT * sizeof(unsigned char)));
     CHECK(cudaMalloc(&devFiltered, WIDTH * HEIGHT * sizeof(unsigned char)));
 
-    /*// Copy Cuda Memory*/
+    // Copy Cuda Memory
     CHECK(cudaMemcpy(devGrayScale, grayScale.img, WIDTH * HEIGHT * sizeof(unsigned char), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(devFiltered, filtered.img, WIDTH * HEIGHT * sizeof(unsigned char), cudaMemcpyHostToDevice));
+    // Set to 0 just in case
+    CHECK(cudaMemset(devFiltered, 0, WIDTH * HEIGHT * sizeof(unsigned char)));
 
-    /*// Run the kernel*/
+    // Run the kernel
     dim3 dimBlock(WIDTH, HEIGHT);
     dim3 dimGrid(1);
     filter<<<dimBlock, dimGrid>>>(devGrayScale, devFiltered);
 
-    /*// Return the Cuda Memory*/
+    // Return the Cuda Memory
     CHECK(cudaMemcpy(filtered.img, devFiltered, WIDTH * HEIGHT * sizeof(unsigned char), cudaMemcpyDeviceToHost));
-
 
     FILE *out;
     if (!(out = fopen(fname2, "wb")))
