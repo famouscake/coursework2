@@ -1,12 +1,9 @@
 #include <stdio.h>
 #define CHECK(e) { int res = (e); if (res) printf("CUDA ERROR %d\n", res); }
+
+/*#define THRESH -1*/
 #define THRESH 10000
-
-#define N 480
-
-#define WIDTH 640
-#define HEIGHT 480
-#define WARP_SIZE 32
+/*#define WARP_SIZE 32*/
 
 texture<unsigned char, 2> imageTex;
 
@@ -29,36 +26,45 @@ struct Image {
 };
 
     __global__
-void filter(unsigned char *grayScale, unsigned char *filtered)
+void filter(unsigned char *grayScale, unsigned char *filtered, int width, int height)
 {
     // @TODO Make this a variable somehow
-    __shared__ unsigned char cache[32][32];
+    __shared__ unsigned char cache[16][16];
 
+    int stride = 0;
     int tid = (blockIdx.x * gridDim.y * blockDim.x * blockDim.y) + (blockIdx.y * blockDim.x * blockDim.y) + (threadIdx.x * blockDim.y) + threadIdx.y;
 
-    int i = tid % WIDTH;
-    int j = tid / WIDTH;
+    int i = (tid + stride) % width;
+    int j = (tid + stride) / width;
 
-    if (i <= 0 || i >= WIDTH - 1 || j <= 0 || j >= HEIGHT - 1)
+    while (i > 0 && i < width - 1 & j > 0 && j < height - 1)
+    /*if (i > 0 && i < width - 1 & j > 0 && j < height - 1)*/
     {
-        return;
+        int gradX = tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i, j+1) - 2*tex2D(imageTex, i, j-1) + tex2D(imageTex, i+1, j+1) - tex2D(imageTex, i+1, j-1);
+        int gradY = tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i-1, j) + tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i+1, j-1) - 2*tex2D(imageTex, i+1, j) - tex2D(imageTex, i+1, j+1);
+
+        int magnitude = gradX*gradX + gradY*gradY;
+
+        if (magnitude  > THRESH)
+        {
+            cache[threadIdx.x][threadIdx.y] = 255;
+        }
+        else
+        {
+            cache[threadIdx.x][threadIdx.y] = 0;
+        }
+
+        // @TODO Is this really necessary?
+        __syncthreads();
+
+        filtered[j * width + i] = cache[threadIdx.x][threadIdx.y];
+
+        stride += gridDim.x * gridDim.y * blockDim.x * blockDim.y - width;
+
+        i = (tid + stride) % width;
+        j = (tid + stride) / width;
     }
 
-    int gradX = tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i, j+1) - 2*tex2D(imageTex, i, j-1) + tex2D(imageTex, i+1, j+1) - tex2D(imageTex, i+1, j-1);
-    int gradY = tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i-1, j) + tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i+1, j-1) - 2*tex2D(imageTex, i+1, j) - tex2D(imageTex, i+1, j+1);
-
-    int magnitude = gradX*gradX + gradY*gradY;
-
-    if (magnitude  > 10000)
-    {
-        cache[blockIdx.x][blockIdx.y] = 255;
-    }
-    else
-    {
-        cache[blockIdx.x][blockIdx.y] = 0;
-    }
-
-    filtered[j * WIDTH + i] = cache[blockIdx.x][blockIdx.y];
 }
 
 void run(int, char**);
@@ -102,6 +108,7 @@ void run(int argc, char **argv)
     fscanf(src, "%d\n", &ignored);
 
     int pixels = source.width * source.height;
+    int imageSize = source.width * source.height * sizeof(unsigned char);
     source.img = (unsigned char *)malloc(pixels*3);
     if (fread(source.img, sizeof(unsigned char), pixels*3, src) != pixels*3)
     {
@@ -132,27 +139,26 @@ void run(int argc, char **argv)
     unsigned char *devFiltered;
 
     // Initialize Cuda Memory
-    CHECK(cudaMalloc(&devGrayScale, WIDTH * HEIGHT * sizeof(unsigned char)));
-    CHECK(cudaMalloc(&devFiltered, WIDTH * HEIGHT * sizeof(unsigned char)));
-
+    CHECK(cudaMalloc(&devGrayScale, imageSize));
+    CHECK(cudaMalloc(&devFiltered, imageSize));
 
     // Copy Cuda Memory
-    CHECK(cudaMemcpy(devGrayScale, grayScale.img, WIDTH * HEIGHT * sizeof(unsigned char), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(devGrayScale, grayScale.img, imageSize, cudaMemcpyHostToDevice));
 
     // Set to 0 just in case
-    CHECK(cudaMemset(devFiltered, 0, WIDTH * HEIGHT * sizeof(unsigned char)));
+    CHECK(cudaMemset(devFiltered, 0, imageSize));
 
-    /*CHECK(cudaBindTexture(NULL, imageTex, devGrayScale, WIDTH * HEIGHT * sizeof(unsigned char)));*/
     cudaChannelFormatDesc desc = cudaCreateChannelDesc<unsigned char>();
-    CHECK(cudaBindTexture2D(NULL, imageTex, devGrayScale, desc, WIDTH, HEIGHT, sizeof(unsigned char) * WIDTH));
+    CHECK(cudaBindTexture2D(NULL, imageTex, devGrayScale, desc, source.width, source.height, sizeof(unsigned char) * source.width));
 
     // Run the kernel
-    dim3 dimBlock(WIDTH/32, HEIGHT/32);
-    dim3 dimGrid(32, 32);
-    filter<<<dimBlock, dimGrid>>>(devGrayScale, devFiltered);
+    int n = 16;
+    dim3 dimBlock(source.width/n, source.height/n - 20);
+    dim3 dimGrid(n, n);
+    filter<<<dimBlock, dimGrid>>>(devGrayScale, devFiltered, filtered.width, filtered.height);
 
     // Return the Cuda Memory
-    CHECK(cudaMemcpy(filtered.img, devFiltered, WIDTH * HEIGHT * sizeof(unsigned char), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(filtered.img, devFiltered, imageSize, cudaMemcpyDeviceToHost));
 
     FILE *out;
     if (!(out = fopen(fname2, "wb")))
