@@ -1,9 +1,10 @@
 #include <stdio.h>
+#include <assert.h>
 #define CHECK(e) { int res = (e); if (res) printf("CUDA ERROR %d\n", res); }
 
 /*#define THRESH -1*/
 #define THRESH 10000
-/*#define WARP_SIZE 32*/
+#define WARP_SIZE 32
 
 texture<unsigned char, 2> imageTex;
 
@@ -11,7 +12,6 @@ texture<unsigned char, 2> imageTex;
  * TODO List
  *
  * - Resize image to test for speed
- * - Introduce a stride
  * - Think how this can work for images of any size
  * - Think about bank collisions
  * - Refactor the code
@@ -32,20 +32,23 @@ void filter(unsigned char *grayScale, unsigned char *filtered, int width, int he
     __shared__ unsigned char cache[16][16];
 
     int stride = 0;
+
+    // The function is not 1-1 because tid is a different index in the image and in the grid
     int tid = (blockIdx.x * gridDim.y * blockDim.x * blockDim.y) + (blockIdx.y * blockDim.x * blockDim.y) + (threadIdx.x * blockDim.y) + threadIdx.y;
 
     int i = (tid + stride) % width;
     int j = (tid + stride) / width;
 
-    while (i > 0 && i < width - 1 & j > 0 && j < height - 1)
-    /*if (i > 0 && i < width - 1 & j > 0 && j < height - 1)*/
+    while (i < width - 1 && j < height - 1)
     {
         int gradX = tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i, j+1) - 2*tex2D(imageTex, i, j-1) + tex2D(imageTex, i+1, j+1) - tex2D(imageTex, i+1, j-1);
         int gradY = tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i-1, j) + tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i+1, j-1) - 2*tex2D(imageTex, i+1, j) - tex2D(imageTex, i+1, j+1);
 
         int magnitude = gradX*gradX + gradY*gradY;
 
-        if (magnitude  > THRESH)
+        // The check for the edge pixels on the top and left boundary is made here
+        // and not in the loop condition because otherwise all threads on either edges will not stride
+        if (magnitude  > THRESH && i > 0 && j > 0)
         {
             cache[threadIdx.x][threadIdx.y] = 255;
         }
@@ -59,7 +62,7 @@ void filter(unsigned char *grayScale, unsigned char *filtered, int width, int he
 
         filtered[j * width + i] = cache[threadIdx.x][threadIdx.y];
 
-        stride += gridDim.x * gridDim.y * blockDim.x * blockDim.y - width;
+        stride += gridDim.x * gridDim.y * blockDim.x * blockDim.y;
 
         i = (tid + stride) % width;
         j = (tid + stride) / width;
@@ -153,7 +156,7 @@ void run(int argc, char **argv)
 
     // Run the kernel
     int n = 16;
-    dim3 dimBlock(source.width/n, source.height/n - 20);
+    dim3 dimBlock(source.width/n, 1);
     dim3 dimGrid(n, n);
     filter<<<dimBlock, dimGrid>>>(devGrayScale, devFiltered, filtered.width, filtered.height);
 
