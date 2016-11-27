@@ -6,15 +6,15 @@
 
 #define WIDTH 640
 #define HEIGHT 480
+#define WARP_SIZE 32
 
+texture<unsigned char, 2> imageTex;
 
 /**
  * TODO List
  *
- * - Start using threads
- * - Start using texture memory
- * - Start using shared memory for caching
  * - Resize image to test for speed
+ * - Introduce a stride
  * - Think how this can work for images of any size
  * - Think about bank collisions
  * - Refactor the code
@@ -28,65 +28,38 @@ struct Image {
     unsigned char *dev_img;
 };
 
-unsigned char getPixel(Image *image, int x, int y)
-{
-    int id = x * image->width + y;
-    return image->img[id];
-}
-
-void setPixel(Image *image, int x, int y, unsigned char value)
-{
-    int id = x * image->width + y;
-    image->img[id] = value;
-}
-
-
-    __device__
-unsigned char getPixel2(unsigned char *image, int x, int y, int width)
-{
-    int id = y * WIDTH + x;
-    return image[id];
-}
-
-    __device__
-void setPixel2(unsigned char *image, int x, int y, unsigned char value, int width)
-{
-    int id = y * WIDTH + x;
-    image[id] = value;
-}
-
     __global__
 void filter(unsigned char *grayScale, unsigned char *filtered)
 {
-    /*int tid = (blockIdx.x * gridDim.y * blockDim.x * blockDim.y) + (blockIdx.y * blockDim.x * blockDim.y) + (threadIdx.x * blockDim.y) + threadIdx.y;*/
+    // @TODO Make this a variable somehow
+    __shared__ unsigned char cache[32][32];
 
-    /*int i = tid / N;*/
-    /*int j = tid % N;*/
+    int tid = (blockIdx.x * gridDim.y * blockDim.x * blockDim.y) + (blockIdx.y * blockDim.x * blockDim.y) + (threadIdx.x * blockDim.y) + threadIdx.y;
 
-    int i = blockIdx.x;
-    int j = blockIdx.y;
+    int i = tid % WIDTH;
+    int j = tid / WIDTH;
 
-    if (i == 0 || i == WIDTH - 1 || j == 0 || j == HEIGHT - 1)
+    if (i <= 0 || i >= WIDTH - 1 || j <= 0 || j >= HEIGHT - 1)
     {
         return;
     }
 
-    int gradX = getPixel2(grayScale, i-1, j+1, N) - getPixel2(grayScale, i-1, j-1, N) + 2*getPixel2(grayScale, i, j+1, N) - 2*getPixel2(grayScale, i, j-1, N) + getPixel2(grayScale, i+1, j+1, N) - getPixel2(grayScale, i+1, j-1, N);
-
-    int gradY = getPixel2(grayScale, i-1, j-1, N) + 2*getPixel2(grayScale, i-1, j, N) + getPixel2(grayScale, i-1, j+1, N) - getPixel2(grayScale, i+1, j-1, N) - 2*getPixel2(grayScale, i+1, j, N) - getPixel2(grayScale, i+1, j+1, N);
+    int gradX = tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i, j+1) - 2*tex2D(imageTex, i, j-1) + tex2D(imageTex, i+1, j+1) - tex2D(imageTex, i+1, j-1);
+    int gradY = tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i-1, j) + tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i+1, j-1) - 2*tex2D(imageTex, i+1, j) - tex2D(imageTex, i+1, j+1);
 
     int magnitude = gradX*gradX + gradY*gradY;
 
     if (magnitude  > 10000)
     {
-        setPixel2(filtered, i, j, 255, N);
+        cache[blockIdx.x][blockIdx.y] = 255;
     }
     else
     {
-        setPixel2(filtered, i, j, 0, N);
+        cache[blockIdx.x][blockIdx.y] = 0;
     }
-}
 
+    filtered[j * WIDTH + i] = cache[blockIdx.x][blockIdx.y];
+}
 
 
 int main(int argc, char **argv)
@@ -154,14 +127,20 @@ int main(int argc, char **argv)
     CHECK(cudaMalloc(&devGrayScale, WIDTH * HEIGHT * sizeof(unsigned char)));
     CHECK(cudaMalloc(&devFiltered, WIDTH * HEIGHT * sizeof(unsigned char)));
 
+
     // Copy Cuda Memory
     CHECK(cudaMemcpy(devGrayScale, grayScale.img, WIDTH * HEIGHT * sizeof(unsigned char), cudaMemcpyHostToDevice));
+
     // Set to 0 just in case
     CHECK(cudaMemset(devFiltered, 0, WIDTH * HEIGHT * sizeof(unsigned char)));
 
+    /*CHECK(cudaBindTexture(NULL, imageTex, devGrayScale, WIDTH * HEIGHT * sizeof(unsigned char)));*/
+    cudaChannelFormatDesc desc = cudaCreateChannelDesc<unsigned char>();
+    CHECK(cudaBindTexture2D(NULL, imageTex, devGrayScale, desc, WIDTH, HEIGHT, sizeof(unsigned char) * WIDTH));
+
     // Run the kernel
-    dim3 dimBlock(WIDTH, HEIGHT);
-    dim3 dimGrid(1);
+    dim3 dimBlock(WIDTH/32, HEIGHT/32);
+    dim3 dimGrid(32, 32);
     filter<<<dimBlock, dimGrid>>>(devGrayScale, devFiltered);
 
     // Return the Cuda Memory
@@ -190,3 +169,39 @@ int main(int argc, char **argv)
 
     exit(0);
 }
+
+// OLD FILTER WITHOUT TEXTURES
+
+    /*__global__*/
+/*void filter(unsigned char *grayScale, unsigned char *filtered)*/
+/*{*/
+    /*int tid = (blockIdx.x * gridDim.y * blockDim.x * blockDim.y) + (blockIdx.y * blockDim.x * blockDim.y) + (threadIdx.x * blockDim.y) + threadIdx.y;*/
+
+    /*int i = tid % WIDTH;*/
+    /*int j = tid / WIDTH;*/
+
+    /*if (i <= 0 || i >= WIDTH - 1 || j <= 0 || j >= HEIGHT - 1)*/
+    /*{*/
+        /*return;*/
+    /*}*/
+
+    /*setPixel(filtered, i, j, tex2D(imageTex, i, j), N);*/
+
+    /*[>int gradX = tex2D(imageTex, i, j);<]*/
+    /*[>int gradY = tex2D(imageTex, i, j);<]*/
+
+    /*[>int gradX = getPixel(grayScale, i-1, j+1, N) - getPixel(grayScale, i-1, j-1, N) + 2*getPixel(grayScale, i, j+1, N) - 2*getPixel(grayScale, i, j-1, N) + getPixel(grayScale, i+1, j+1, N) - getPixel(grayScale, i+1, j-1, N);<]*/
+
+    /*[>int gradY = getPixel(grayScale, i-1, j-1, N) + 2*getPixel(grayScale, i-1, j, N) + getPixel(grayScale, i-1, j+1, N) - getPixel(grayScale, i+1, j-1, N) - 2*getPixel(grayScale, i+1, j, N) - getPixel(grayScale, i+1, j+1, N);<]*/
+
+    /*[>int magnitude = gradX*gradX + gradY*gradY;<]*/
+
+    /*[>if (magnitude  > 10000)<]*/
+    /*[>{<]*/
+        /*[>setPixel(filtered, i, j, 255, N);<]*/
+    /*[>}<]*/
+    /*[>else<]*/
+    /*[>{<]*/
+        /*[>setPixel(filtered, i, j, 0, N);<]*/
+    /*[>}<]*/
+/*}*/
