@@ -61,8 +61,16 @@ void filter(unsigned char *grayScale, unsigned char *filtered)
     filtered[j * WIDTH + i] = cache[blockIdx.x][blockIdx.y];
 }
 
+void run(int, char**);
 
 int main(int argc, char **argv)
+{
+    run(argc, argv);
+
+    exit(0);
+}
+
+void run(int argc, char **argv)
 {
     Image source;
 
@@ -167,7 +175,6 @@ int main(int argc, char **argv)
     cudaFree(devGrayScale);
     cudaFree(devFiltered);
 
-    exit(0);
 }
 
 // OLD FILTER WITHOUT TEXTURES
