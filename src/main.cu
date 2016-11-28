@@ -30,7 +30,7 @@ struct Image {
 void filter(unsigned char *filtered, int width, int height)
 {
     // @TODO Make this a variable somehow
-    __shared__ unsigned char cache[BLOCK_DIM * BLOCK_DIM];
+    __shared__ int cache[BLOCK_DIM * BLOCK_DIM];
 
     int stride = 0;
 
@@ -51,17 +51,17 @@ void filter(unsigned char *filtered, int width, int height)
         // and not in the loop condition because otherwise all threads on either edges will not stride
         if (magnitude  > THRESH && i > 0 && j > 0)
         {
-            cache[threadIdx.x * 16 + threadIdx.y] = 255;
+            cache[threadIdx.x * BLOCK_DIM + threadIdx.y] = 255;
         }
         else
         {
-            cache[threadIdx.x * 16 + threadIdx.y] = 0;
+            cache[threadIdx.x * BLOCK_DIM + threadIdx.y] = 0;
         }
 
         // @TODO Is this really necessary?
         __syncthreads();
 
-        filtered[j * width + i] = cache[threadIdx.x * 16 + threadIdx.y];
+        filtered[j * width + i] = cache[threadIdx.x * BLOCK_DIM + threadIdx.y];
 
         stride += gridDim.x * gridDim.y * blockDim.x * blockDim.y;
 
