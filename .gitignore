@@ -1,4 +1,5 @@
 ./bin
+./images
 
 # Compiled Object files
 *.slo
