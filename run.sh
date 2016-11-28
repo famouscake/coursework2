@@ -1,1 +1,1 @@
-clear ; make nvcc ; time ./bin/run.out ./images/valve.pbm ./images/sobel2.pgm ; eog ./images/sobel2.pgm
+clear ; make nvcc ; time ./bin/run.out ./images/valve.pbm ./images/sobel2.pgm ; diff ./images/sobel.pgm ./images/sobel2.pgm
