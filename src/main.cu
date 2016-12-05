@@ -3,21 +3,17 @@
 
 #define CHECK(e) { int res = (e); if (res) printf("CUDA ERROR %d\n", res); }
 
-/*#define THRESH -1*/
+// Used for debugging so that the output is all white
+// #define THRESH -1
+
 #define THRESH 10000
+
 #define WARP_SIZE 32
+
+// Both the x and y dimention of blocks as they are square
 #define BLOCK_DIM 16
 
 texture<unsigned char, 2> imageTex;
-
-/**
- * TODO List
- *
- * - Think how this can work for images of any size
- * - Think about bank collisions
- * - Refactor the code
- * - Separate into multiple files
- */
 
 struct Image {
     int width;
@@ -29,13 +25,12 @@ struct Image {
     __global__
 void filter(unsigned char *filtered, int width, int height)
 {
-    // @TODO Make this a variable somehow
     __shared__ int cache[BLOCK_DIM * BLOCK_DIM];
 
     int stride = 0;
 
-    // The function is not 1-1 because tid is a different index in the image and in the grid
     int tid = (blockIdx.x * gridDim.y * blockDim.x * blockDim.y) + (blockIdx.y * blockDim.x * blockDim.y) + (threadIdx.x * blockDim.y) + threadIdx.y;
+    int localId = threadIdx.x * blockDim.x + threadIdx.y;
 
     int i = (tid + stride) % width;
     int j = (tid + stride) / width;
@@ -45,35 +40,40 @@ void filter(unsigned char *filtered, int width, int height)
         int gradX = tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i, j+1) - 2*tex2D(imageTex, i, j-1) + tex2D(imageTex, i+1, j+1) - tex2D(imageTex, i+1, j-1);
         int gradY = tex2D(imageTex, i-1, j-1) + 2*tex2D(imageTex, i-1, j) + tex2D(imageTex, i-1, j+1) - tex2D(imageTex, i+1, j-1) - 2*tex2D(imageTex, i+1, j) - tex2D(imageTex, i+1, j+1);
 
-        int magnitude = gradX*gradX + gradY*gradY;
+        int magnitude = (gradX * gradX) + (gradY * gradY);
 
         // The check for the edge pixels on the top and left boundary is made here
         // and not in the loop condition because otherwise all threads on either edges will not stride
         if (magnitude  > THRESH && i > 0 && j > 0)
         {
-            cache[threadIdx.x * BLOCK_DIM + threadIdx.y] = 255;
+            cache[localId] = 255;
         }
         else
         {
-            cache[threadIdx.x * BLOCK_DIM + threadIdx.y] = 0;
+            cache[localId] = 0;
         }
 
-        // @TODO Is this really necessary?
         __syncthreads();
 
-        filtered[j * width + i] = cache[threadIdx.x * BLOCK_DIM + threadIdx.y];
+        filtered[j * width + i] = cache[localId];
 
         stride += gridDim.x * gridDim.y * blockDim.x * blockDim.y;
 
         i = (tid + stride) % width;
         j = (tid + stride) / width;
     }
-
 }
 
-void readImage(char*, Image*);
+// Save an image to file
 void saveImage(char*, Image*);
+
+// Read PBM image from file
+Image readImage(char*);
+
+// Convert an image to Gray Scale
 Image convertGrayScale(Image*);
+
+// Run the sobel image filter
 Image runFilter(Image*);
 
 int main(int argc, char **argv)
@@ -88,10 +88,9 @@ int main(int argc, char **argv)
     char *fname2 = argv[2];
 
     // Read Original Image
-    Image source;
-    readImage(fname, &source);
+    Image source = readImage(fname);
 
-    // Conver to Gray Scale
+    // Convert to Gray Scale
     Image grayScale = convertGrayScale(&source);
 
     // Filter the image
@@ -130,6 +129,7 @@ Image runFilter(Image *grayScale)
     CHECK(cudaMemcpy(devGrayScale, grayScale->img, imageSize, cudaMemcpyHostToDevice));
     CHECK(cudaMemset(devFiltered, 0, imageSize));
 
+    // Initalize texture
     cudaChannelFormatDesc desc = cudaCreateChannelDesc<unsigned char>();
     CHECK(cudaBindTexture2D(NULL, imageTex, devGrayScale, desc, grayScale->width, grayScale->height, sizeof(unsigned char) * grayScale->width));
 
@@ -150,7 +150,7 @@ Image runFilter(Image *grayScale)
     cudaEventSynchronize(event2);
     float dt_ms = 0;
     cudaEventElapsedTime(&dt_ms, event1, event2);
-    printf("TIME : %f\n\n", dt_ms);
+    printf("The filter ran in : %f seconds.\n", dt_ms);
 
     // Return the Cuda Memory
     CHECK(cudaMemcpy(filtered.img, devFiltered, imageSize, cudaMemcpyDeviceToHost));
@@ -163,8 +163,10 @@ Image runFilter(Image *grayScale)
     return filtered;
 }
 
-void readImage(char *fname, Image *source)
+Image readImage(char *fname)
 {
+    Image source;
+
     FILE *src;
 
     if (!(src = fopen(fname, "rb")))
@@ -181,18 +183,20 @@ void readImage(char *fname, Image *source)
         exit(1);
     }
 
-    fscanf(src, "%d %d\n", &source->width, &source->height);
+    fscanf(src, "%d %d\n", &source.width, &source.height);
     int ignored;
     fscanf(src, "%d\n", &ignored);
 
-    int pixels = source->width * source->height;
-    source->img = (unsigned char *)malloc(pixels*3);
-    if (fread(source->img, sizeof(unsigned char), pixels*3, src) != pixels*3)
+    int pixels = source.width * source.height;
+    source.img = (unsigned char *)malloc(pixels*3);
+    if (fread(source.img, sizeof(unsigned char), pixels*3, src) != pixels*3)
     {
         printf("Error reading file.\n");
         exit(1);
     }
     fclose(src);
+
+    return source;
 }
 
 void saveImage(char *fname, Image *source)
